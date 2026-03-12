@@ -1,0 +1,698 @@
+import streamlit as st
+import pandas as pd
+import requests
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import time
+import io
+
+# ==============================================================================
+# 1. CORE CONFIGURATION & CONSTANTS
+# ==============================================================================
+st.set_page_config(
+    page_title="SURA CORE v7.0 - Intelligence System",
+    layout="wide",
+    page_icon="🏢",
+    initial_sidebar_state="expanded"
+)
+
+# --- GLOBAL SESSION STATES ---
+if 'custom_estados' not in st.session_state:
+    st.session_state.custom_estados = [
+        "aplica", "desembolso", "deudor", "sin ahorros", 
+        "otro filtro", "multired vencida", "otro desembolso", "robado", "cesante"
+    ]
+
+# --- CONSTANTS ---
+MES_ACTUAL_NOMBRE = "Marzo"
+ANIO_ACTUAL = 2026
+
+# ==============================================================================
+# 2. SURA NEOMORPHIC UI / CSS v7.0
+# ==============================================================================
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap');
+    
+    :root {
+        --sura-green: #2ea043;
+        --sura-bright-green: #3fb950;
+        --bg-dark: #0d1117;
+        --bg-card: #161b22;
+        --border-ui: #30363d;
+        --text-muted: #8b949e;
+    }
+
+    /* Reset global y fondos */
+    .stApp { background-color: var(--bg-dark); font-family: 'Inter', sans-serif; }
+    
+    /* Ocultar elementos de Streamlit por defecto */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Títulos */
+    .sura-title {
+        font-family: 'Inter', sans-serif; font-weight: 900;
+        background: linear-gradient(90deg, #ffffff, var(--sura-bright-green));
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        font-size: 2.5rem; letter-spacing: -1px; margin-bottom: 20px;
+    }
+
+    /* Tarjetas de Métricas (Responsivas y Compactas) */
+    .metric-container {
+        display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;
+    }
+    .metric-card {
+        background: var(--bg-card); border: 1px solid var(--border-ui);
+        border-radius: 12px; padding: 15px; flex: 1; min-width: 200px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: transform 0.2s;
+    }
+    .metric-card:hover { transform: translateY(-2px); border-color: var(--sura-green); }
+    .metric-label { color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 1.8rem; font-weight: 800; color: white; margin: 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    
+    /* Badges */
+    .sura-badge { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; display: inline-block; }
+    .badge-up { background: rgba(63, 185, 80, 0.15); color: #3fb950; border: 1px solid rgba(63, 185, 80, 0.3); }
+    .badge-down { background: rgba(255, 123, 114, 0.15); color: #ff7b72; border: 1px solid rgba(255, 123, 114, 0.3); }
+
+    /* Etiquetas de Configuración */
+    .state-tag {
+        background: #21262d; border: 1px solid #30363d; border-radius: 20px;
+        padding: 5px 15px; display: inline-block; margin: 5px; color: #c9d1d9; font-weight: 600;
+    }
+
+    /* Botones y Sidebar */
+    [data-testid="stSidebar"] { background-color: #0b0e14; border-right: 1px solid var(--border-ui); }
+    .stButton>button { border-radius: 8px; font-weight: 600; transition: all 0.3s ease; width: 100%; }
+    .stButton>button:hover { border-color: var(--sura-green); color: var(--sura-bright-green); }
+    
+    /* Radio buttons del menú (para que se vea todo) */
+    .stRadio > div { flex-direction: column; align-items: stretch; }
+    .stRadio > div > label {
+        padding: 10px 15px; background: rgba(255, 255, 255, 0.03); border: 1px solid transparent;
+        border-radius: 8px; margin-bottom: 5px; cursor: pointer; transition: 0.3s; width: 100%;
+    }
+    .stRadio > div > label:hover { background: rgba(46, 160, 67, 0.1); border: 1px solid rgba(46, 160, 67, 0.3); }
+    .stRadio > div > label[data-checked="true"] { background: rgba(46, 160, 67, 0.2); border: 1px solid var(--sura-bright-green); color: white; }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# 3. HIGH-PERFORMANCE DATA ENGINE (Optimizado para >6900 registros)
+# ==============================================================================
+URL = st.secrets["SUPABASE_URL"]
+KEY = st.secrets["SUPABASE_KEY"]
+HEADERS = {
+    "apikey": KEY,
+    "Authorization": f"Bearer {KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=minimal"
+}
+
+@st.cache_data(ttl=300)
+def load_sura_core_db():
+    """
+    Carga optimizada de la red completa de activos.
+    NOTA: Supabase limita la paginación por defecto a 1000 registros por query.
+    Si se pide limit=2000, te trunca silenciosamente. Por eso el salto es de 1000 exactos.
+    """
+    all_data = []
+    limit = 1000
+    offset = 0
+    
+    with st.spinner('Cargando base de datos SURA...'):
+        while True:
+            try:
+                # Orden por id o dni garantiza que no haya saltos raros
+                req_url = f"{URL}/rest/v1/clientes?select=*&order=dni&offset={offset}&limit={limit}"
+                r = requests.get(req_url, headers=HEADERS, timeout=15)
+                r.raise_for_status()
+                batch = r.json()
+                
+                if not batch:
+                    break
+                    
+                all_data.extend(batch)
+                
+                # Si el batch regresó menos del límite, ya terminamos
+                if len(batch) < limit:
+                    break
+                
+                offset += limit
+            except Exception as e:
+                st.error(f"Error de conexión con Supabase (Offset {offset}): {e}")
+                break
+    
+    df = pd.DataFrame(all_data)
+    
+    if not df.empty:
+        # Conversión de tipos masiva segura
+        numeric_cols = ['monto', 'cuota', 'deuda']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        
+        # Procesamiento de historial para el año actual
+        def check_month(hist, mes):
+            try:
+                if not isinstance(hist, dict): return "❌"
+                year_data = hist.get(str(ANIO_ACTUAL), {})
+                return "✅" if year_data.get(mes) == 1 else "❌"
+            except:
+                return "❌"
+        
+        if 'historial' in df.columns:
+            df['ENE'] = df['historial'].apply(lambda x: check_month(x, 'enero'))
+            df['FEB'] = df['historial'].apply(lambda x: check_month(x, 'febrero'))
+            df['MAR'] = df['historial'].apply(lambda x: check_month(x, 'marzo'))
+        else:
+            df['ENE'], df['FEB'], df['MAR'] = "❌", "❌", "❌"
+            
+    return df
+
+# ==============================================================================
+# 4. COMPONENTS & FORMATTING FUNCTIONS
+# ==============================================================================
+def compact_currency(value):
+    """Formatea números grandes para evitar desbordes en tarjetas"""
+    if value >= 1_000_000:
+        return f"S/ {value/1_000_000:.2f}M"
+    elif value >= 1_000:
+        return f"S/ {value/1_000:.1f}k"
+    else:
+        return f"S/ {value:,.0f}"
+
+def draw_custom_metric(label, value, delta, is_positive=True):
+    badge_class = "badge-up" if is_positive else "badge-down"
+    arrow = "↑" if is_positive else "↓"
+    return f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="sura-badge {badge_class}">{arrow} {delta}</div>
+        </div>
+    """
+
+def apply_plotly_theme(fig):
+    """Aplica la identidad visual SURA a cualquier gráfico Plotly"""
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(22, 27, 34, 0.5)',
+        font_color="#c9d1d9",
+        title_font=dict(size=18, color="white", family="Inter"),
+        margin=dict(l=20, r=20, t=40, b=20),
+        xaxis=dict(gridcolor='#30363d', zerolinecolor='#30363d'),
+        yaxis=dict(gridcolor='#30363d', zerolinecolor='#30363d')
+    )
+    return fig
+
+# ==============================================================================
+# 5. NAVIGATION STRUCTURE (RADIO BUTTONS)
+# ==============================================================================
+df_core = load_sura_core_db()
+
+with st.sidebar:
+    st.markdown("<div style='text-align: center; margin-bottom: 20px;'><h1 style='font-size: 3rem; margin: 0;'>🏢</h1><h2 style='color: white; margin: 0;'>SURA v7.0</h2><p style='color: #8b949e; font-size: 0.8rem;'>Muni Nuevo Chimbote</p></div>", unsafe_allow_html=True)
+    
+    st.markdown(f"<div style='background: rgba(46, 160, 67, 0.1); border-left: 3px solid var(--sura-bright-green); padding: 10px; border-radius: 4px; color: white; margin-bottom: 20px;'>Operador:<br><strong>Leonardo Tavera</strong></div>", unsafe_allow_html=True)
+    
+    st.markdown("**Navegación Principal**")
+    # Utilizamos RADIO en lugar de selectbox para que sea "todo compacto y que se muestren todos"
+    menu_options = [
+        "📊 Dashboard Estratégico",
+        "📋 Gestión de Padrones",
+        "🔍 Auditoría Avanzada",
+        "📥 Reportes & XLSX",
+        "⚙️ Configuración Sistema"
+    ]
+    menu = st.radio("Menu", menu_options, label_visibility="collapsed")
+    
+    st.divider()
+    st.markdown("### Estado de Red")
+    total_records = len(df_core) if not df_core.empty else 0
+    st.caption(f"Registros Sincronizados: **{total_records:,}**")
+    
+    if st.button("🔄 Sincronizar (Limpiar Caché)"):
+        st.cache_data.clear()
+        st.rerun()
+        
+    st.markdown("---")
+    st.caption("SURA CORE © 2026")
+
+# ==============================================================================
+# MODULE 1: DASHBOARD ESTRATÉGICO (REDISEÑADO & EXPANDIDO)
+# ==============================================================================
+if menu == "📊 Dashboard Estratégico":
+    st.markdown("<h1 class='sura-title'>DASHBOARD GLOBAL</h1>", unsafe_allow_html=True)
+    
+    if df_core.empty:
+        st.warning("No hay datos cargados desde la base de datos.")
+    else:
+        # --- FILA DE MÉTRICAS COMPACTAS (Soluciona el problema de S/ desbordado) ---
+        m_html = "<div class='metric-container'>"
+        
+        # 1. Cartera Total
+        m_html += draw_custom_metric("Cartera Total", f"{len(df_core):,}", "Live", True)
+        
+        # 2. Capital Nominal (Formateado)
+        total_monto = df_core['monto'].sum() if 'monto' in df_core.columns else 0
+        m_html += draw_custom_metric("Capital en Red", compact_currency(total_monto), "Nominal", True)
+        
+        # 3. Mora Proyectada (Formateado)
+        total_deuda = df_core['deuda'].sum() if 'deuda' in df_core.columns else 0
+        porcentaje_mora = (total_deuda / total_monto * 100) if total_monto > 0 else 0
+        m_html += draw_custom_metric("Mora Proyectada", compact_currency(total_deuda), f"{porcentaje_mora:.1f}% del capital", False)
+        
+        # 4. Efectividad del Mes
+        if 'MAR' in df_core.columns:
+            efec_val = len(df_core[df_core['MAR'] == '✅'])
+            porcentaje_efec = (efec_val / len(df_core)) * 100
+            m_html += draw_custom_metric(f"Efectividad {MES_ACTUAL_NOMBRE}", f"{efec_val:,}", f"{porcentaje_efec:.1f}%", True)
+        
+        m_html += "</div>"
+        st.markdown(m_html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # --- FILA ANALÍTICA 1: ESTADOS ---
+        g1, g2 = st.columns([1.5, 1])
+        
+        with g1:
+            st.subheader("📊 Distribución por Estados Operativos")
+            data_graf = df_core['estado'].value_counts().reset_index()
+            data_graf.columns = ['estado', 'count']
+            
+            fig_pie = px.pie(
+                data_graf, values='count', names='estado', hole=0.6,
+                color_discrete_sequence=px.colors.sequential.Greens_r
+            )
+            fig_pie = apply_plotly_theme(fig_pie)
+            fig_pie.update_layout(margin=dict(t=0, b=0, l=0, r=0), legend=dict(orientation="v", y=0.5, x=1.0))
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        with g2:
+            st.subheader("📌 Resumen Operativo")
+            resumen_df = df_core['estado'].value_counts().reset_index()
+            resumen_df.columns = ['Estado', 'Total']
+            st.dataframe(
+                resumen_df, 
+                column_config={"Total": st.column_config.ProgressColumn("Volumen", format="%d", min_value=0, max_value=int(resumen_df['Total'].max()))},
+                use_container_width=True, hide_index=True, height=350
+            )
+
+        # --- FILA ANALÍTICA 2: MONTOS Y JERARQUÍA ---
+        st.divider()
+        st.subheader("📈 Análisis de Tendencias y Distribución de Capital")
+        
+        col_bar, col_treemap = st.columns(2)
+        
+        with col_bar:
+            st.markdown("**Capital Asignado por Categoría de Estado**")
+            df_bar = df_core.groupby('estado')['monto'].sum().sort_values(ascending=False).reset_index()
+            fig_bar = px.bar(df_bar, x='estado', y='monto', color='monto', color_continuous_scale='Greens', text_auto='.2s')
+            fig_bar = apply_plotly_theme(fig_bar)
+            fig_bar.update_traces(textfont_size=12, textangle=0, textposition="outside", cliponaxis=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+        with col_treemap:
+            st.markdown("**Mapa de Jerarquía de Activos Críticos** (Top 1000 por monto)")
+            df_top = df_core.nlargest(1000, 'monto').fillna("Indefinido")
+            # Reemplazar valores vacíos para que el treemap no falle
+            df_top['estado'] = df_top['estado'].replace("", "Sin Estado")
+            
+            fig_tree = px.treemap(df_top, path=['estado', 'nombre'], values='monto',
+                                 color='monto', color_continuous_scale='Greens')
+            fig_tree = apply_plotly_theme(fig_tree)
+            fig_tree.update_layout(margin=dict(t=10, b=10, l=10, r=10))
+            st.plotly_chart(fig_tree, use_container_width=True)
+
+        # --- FILA ANALÍTICA 3: GRÁFICOS SOLICITADOS (SCATTER Y BOXPLOT) ---
+        st.divider()
+        st.subheader("🔬 Inteligencia de Dispersión (Monto vs Cuota / Deuda)")
+        
+        c_scat1, c_scat2 = st.columns(2)
+        
+        with c_scat1:
+            st.markdown("**Relación Monto Asignado vs Cuota Mensual**")
+            # Usar un subset para que renderice rápido en el navegador si hay muchos datos
+            df_sample = df_core.sample(min(3000, len(df_core))) if len(df_core) > 3000 else df_core
+            fig_scatter = px.scatter(
+                df_sample, x="monto", y="cuota", color="estado", 
+                size="deuda", hover_data=['dni', 'nombre'],
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                opacity=0.7
+            )
+            fig_scatter = apply_plotly_theme(fig_scatter)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+        with c_scat2:
+            st.markdown("**Distribución de Deuda por Estado (Boxplot)**")
+            fig_box = px.box(
+                df_core[df_core['deuda'] > 0], x="estado", y="deuda", color="estado",
+                notched=True, points="all", color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig_box = apply_plotly_theme(fig_box)
+            fig_box.update_layout(showlegend=False)
+            st.plotly_chart(fig_box, use_container_width=True)
+
+        # --- FILA ANALÍTICA 4: RETIROS MÁS FRECUENTES ---
+        st.divider()
+        st.subheader("💰 Detección de Patrones: Importes Recurrentes")
+        
+        # Agrupamos por montos exactos para ver cuáles son los contratos estándar
+        retiros_freq = df_core['monto'].value_counts().head(15).reset_index()
+        retiros_freq.columns = ['Monto Standard (S/)', 'Frecuencia en Padrón']
+        
+        c_ret1, c_ret2 = st.columns([1, 2.5])
+        with c_ret1:
+            st.dataframe(retiros_freq, use_container_width=True, hide_index=True)
+            
+        with c_ret2:
+            fig_ret = px.line(retiros_freq.sort_values('Monto Standard (S/)'), 
+                              x='Monto Standard (S/)', y='Frecuencia en Padrón', 
+                              markers=True, line_shape='spline')
+            fig_ret.update_traces(line_color='#3fb950', marker=dict(size=12, color='white', line=dict(width=2, color='#3fb950')))
+            fig_ret = apply_plotly_theme(fig_ret)
+            # Llenar área bajo la curva
+            fig_ret.update_traces(fill='tozeroy', fillcolor='rgba(63, 185, 80, 0.1)')
+            st.plotly_chart(fig_ret, use_container_width=True)
+
+# ==============================================================================
+# MODULE 2: GESTIÓN DE PADRONES (Responsive Data Editor)
+# ==============================================================================
+elif menu == "📋 Gestión de Padrones":
+    st.markdown("<h1 class='sura-title'>GESTIÓN OPERATIVA DE ACTIVOS</h1>", unsafe_allow_html=True)
+    
+    # Buscador y Filtros Superiores
+    col_s1, col_s2, col_s3 = st.columns([3, 1.5, 1.5])
+    with col_s1:
+        search = st.text_input("🔍 Localizar por DNI o Nombre del Titular:", placeholder="Ej: 7123... o MARIA...")
+    with col_s2:
+        filtro_e = st.multiselect("Filtrar Estado:", st.session_state.custom_estados)
+    with col_s3:
+        filtro_deuda = st.selectbox("Estado de Deuda:", ["Todos", "Con Deuda (>0)", "Sin Deuda (0)"])
+
+    # Aplicar filtros
+    df_filtered = df_core.copy()
+    if not df_filtered.empty:
+        if search:
+            df_filtered = df_filtered[df_filtered['nombre'].astype(str).str.contains(search, case=False) | 
+                                      df_filtered['dni'].astype(str).str.contains(search)]
+        if filtro_e:
+            df_filtered = df_filtered[df_filtered['estado'].isin(filtro_e)]
+        if filtro_deuda == "Con Deuda (>0)":
+            df_filtered = df_filtered[df_filtered['deuda'] > 0]
+        elif filtro_deuda == "Sin Deuda (0)":
+            df_filtered = df_filtered[df_filtered['deuda'] <= 0]
+
+        st.caption(f"📌 Registros mostrados: **{len(df_filtered)}** de {len(df_core)}")
+        
+        # Tabla de Selección (Optimizada para UX)
+        st.markdown("**Seleccione un registro haciendo clic en la fila para editarlo:**")
+        selection = st.dataframe(
+            df_filtered[["dni", "nombre", "monto", "cuota", "deuda", "estado", "ENE", "FEB", "MAR"]],
+            column_config={
+                "dni": st.column_config.TextColumn("DNI / ID", width="medium"),
+                "nombre": st.column_config.TextColumn("TITULAR DEL ACTIVO", width="large"),
+                "monto": st.column_config.NumberColumn("MONTO", format="S/ %.2f"),
+                "cuota": st.column_config.NumberColumn("CUOTA", format="S/ %.2f"),
+                "deuda": st.column_config.NumberColumn("DEUDA", format="S/ %.2f"),
+                "estado": st.column_config.TextColumn("ESTADO", width="medium"),
+            },
+            hide_index=True, use_container_width=True, on_select="rerun", selection_mode="single-row", key="table_gest", height=300
+        )
+
+        # Panel de Edición
+        if len(selection.selection.rows) > 0:
+            idx = selection.selection.rows[0]
+            selected_row = df_filtered.iloc[idx]
+            
+            # Buscar el registro crudo original por si modificamos el filtered
+            try:
+                raw_row = df_core[df_core['dni'] == selected_row['dni']].iloc[0]
+                hist_full = raw_row.get('historial', {})
+                if not isinstance(hist_full, dict): hist_full = {}
+            except Exception:
+                hist_full = {}
+            
+            st.markdown("<hr style='border-color: #30363d; margin: 30px 0;'>", unsafe_allow_html=True)
+            st.markdown(f"### ⚙️ Ficha de Actualización: **{selected_row['nombre']}**")
+            st.caption(f"DNI Asociado: {selected_row['dni']}")
+            
+            with st.form("form_edit_master"):
+                # Layout en 3 columnas
+                f1, f2, f3 = st.columns(3)
+                
+                with f1:
+                    new_nom = st.text_input("Titular", value=str(selected_row['nombre']).strip())
+                    
+                    current_est = selected_row['estado']
+                    # Asegurar que el estado actual exista en la lista o agregarlo temporalmente
+                    opciones_estado = st.session_state.custom_estados.copy()
+                    if current_est not in opciones_estado and current_est:
+                        opciones_estado.append(current_est)
+                    
+                    idx_est = opciones_estado.index(current_est) if current_est in opciones_estado else 0
+                    new_est = st.selectbox("Estado Operativo", opciones_estado, index=idx_est)
+                    
+                with f2:
+                    new_mon = st.number_input("Monto Asignado (S/)", value=float(selected_row['monto']), step=100.0)
+                    new_cuo = st.number_input("Cuota Mensual (S/)", value=float(selected_row['cuota']), step=10.0)
+                    
+                with f3:
+                    new_deu = st.number_input("Deuda Acumulada (S/)", value=float(selected_row['deuda']), step=50.0)
+                    new_yr  = st.selectbox("Año Fiscal", [str(ANIO_ACTUAL), str(ANIO_ACTUAL+1), str(ANIO_ACTUAL+2)])
+
+                st.markdown("<br>**📅 Cronograma de Cumplimiento (Efectividad)**", unsafe_allow_html=True)
+                meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+                
+                # Obtener el historial del año seleccionado
+                hist_yr = hist_full.get(new_yr, {}) if isinstance(hist_full.get(new_yr), dict) else {}
+                
+                # Checkboxes en cuadrícula 4x3
+                check_cols = st.columns(4)
+                new_checks = {}
+                
+                for i, m in enumerate(meses):
+                    with check_cols[i % 4]:
+                        val_previo = hist_yr.get(m) == 1
+                        checked = st.checkbox(f"{m.capitalize()}", value=val_previo, key=f"check_{m}")
+                        new_checks[m] = 1 if checked else 0
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                # Botón de Guardado
+                submit_btn = st.form_submit_button("💾 SINCRONIZAR CAMBIOS A SUPABASE", type="primary", use_container_width=True)
+                
+                if submit_btn:
+                    with st.spinner("Conectando con Supabase e inyectando datos..."):
+                        # Actualizar diccionario
+                        hist_full[new_yr] = new_checks
+                        hist_full["last_mod"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        payload = {
+                            "dni": str(selected_row['dni']), 
+                            "nombre": new_nom.upper(),
+                            "monto": new_mon, 
+                            "cuota": new_cuo, 
+                            "deuda": new_deu,
+                            "estado": new_est, 
+                            "historial": hist_full
+                        }
+                        
+                        # POST/PATCH (Depende de cómo tengas configurado tu Upsert en Supabase, asumimos POST con Prefer: resolution=merge-duplicates si DNI es PK)
+                        headers_upsert = HEADERS.copy()
+                        headers_upsert["Prefer"] = "resolution=merge-duplicates,return=minimal"
+                        
+                        res = requests.post(f"{URL}/rest/v1/clientes", headers=headers_upsert, json=[payload])
+                        
+                        if res.status_code in [200, 201, 204]:
+                            st.success(f"✅ ¡Registro de {new_nom} actualizado correctamente en la nube!")
+                            st.cache_data.clear()
+                            time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Error al guardar. Código: {res.status_code}. Respuesta: {res.text}")
+
+# ==============================================================================
+# MODULE 3: AUDITORÍA AVANZADA (NUEVO MÓDULO PARA DATA PROFILING)
+# ==============================================================================
+elif menu == "🔍 Auditoría Avanzada":
+    st.markdown("<h1 class='sura-title'>AUDITORÍA Y CALIDAD DE DATOS</h1>", unsafe_allow_html=True)
+    st.markdown("Este módulo permite analizar la integridad de la base de datos de SURA, detectar anomalías, registros vacíos y realizar cruces dinámicos.")
+    
+    if df_core.empty:
+        st.warning("No hay datos para auditar.")
+    else:
+        tab1, tab2, tab3 = st.tabs(["🚦 Salud de la Base de Datos", "🧮 Tabla Dinámica", "⚠️ Alertas Tempranas"])
+        
+        with tab1:
+            st.subheader("Métricas de Integridad")
+            col_a1, col_a2, col_a3 = st.columns(3)
+            
+            # Cálculo de nulos/vacíos
+            nulos_nombre = df_core['nombre'].replace("", pd.NA).isna().sum()
+            nulos_estado = df_core['estado'].replace("", pd.NA).isna().sum()
+            # Detección de duplicados
+            duplicados_dni = df_core.duplicated(subset=['dni'], keep=False).sum()
+            
+            with col_a1: st.metric("Nombres Vacíos", f"{nulos_nombre} registros", delta="Revisar" if nulos_nombre>0 else "OK", delta_color="inverse")
+            with col_a2: st.metric("Estados Sin Asignar", f"{nulos_estado} registros", delta="Revisar" if nulos_estado>0 else "OK", delta_color="inverse")
+            with col_a3: st.metric("DNI Duplicados (Conflictos)", f"{duplicados_dni} registros", delta="Crítico" if duplicados_dni>0 else "OK", delta_color="inverse")
+            
+            st.markdown("---")
+            st.markdown("**Distribución Numérica (Estadística Descriptiva)**")
+            desc_df = df_core[['monto', 'cuota', 'deuda']].describe().T
+            st.dataframe(desc_df.style.format("{:.2f}"), use_container_width=True)
+
+        with tab2:
+            st.subheader("Cubo OLAP / Tabla Dinámica Rápida")
+            agrupador = st.selectbox("Agrupar por:", ['estado', 'MAR', 'FEB', 'ENE'])
+            metrica = st.selectbox("Métrica a analizar:", ['monto', 'deuda', 'cuota'])
+            operacion = st.radio("Operación:", ['Sumatoria', 'Promedio', 'Máximo', 'Mínimo', 'Conteo'], horizontal=True)
+            
+            if operacion == 'Sumatoria':
+                pivot = df_core.groupby(agrupador)[metrica].sum().reset_index()
+            elif operacion == 'Promedio':
+                pivot = df_core.groupby(agrupador)[metrica].mean().reset_index()
+            elif operacion == 'Máximo':
+                pivot = df_core.groupby(agrupador)[metrica].max().reset_index()
+            elif operacion == 'Mínimo':
+                pivot = df_core.groupby(agrupador)[metrica].min().reset_index()
+            else:
+                pivot = df_core.groupby(agrupador)[metrica].count().reset_index()
+                
+            fig_pivot = px.bar(pivot, x=agrupador, y=metrica, text_auto='.2s', color=agrupador, color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_pivot = apply_plotly_theme(fig_pivot)
+            st.plotly_chart(fig_pivot, use_container_width=True)
+
+        with tab3:
+            st.subheader("Motor de Alertas")
+            st.info("Lista de registros que requieren atención inmediata basada en reglas de negocio.")
+            
+            # Regla 1: Deuda mayor que el monto
+            df_alerta_1 = df_core[df_core['deuda'] > df_core['monto']]
+            st.markdown(f"**🔴 Alerta 1: Deuda supera el capital asignado ({len(df_alerta_1)} casos)**")
+            if not df_alerta_1.empty:
+                st.dataframe(df_alerta_1[['dni', 'nombre', 'monto', 'deuda', 'estado']], use_container_width=True)
+                
+            # Regla 2: Sin estado asignado
+            df_alerta_2 = df_core[df_core['estado'].isna() | (df_core['estado'] == '') | (df_core['estado'] == 'nan')]
+            st.markdown(f"**🟡 Alerta 2: Activos Huérfanos (Sin estado operativo) ({len(df_alerta_2)} casos)**")
+            if not df_alerta_2.empty:
+                st.dataframe(df_alerta_2[['dni', 'nombre', 'monto']], use_container_width=True)
+
+# ==============================================================================
+# MODULE 4: REPORTES & EXPORTACIÓN (FIXED CSV / EXCEL ENGINE)
+# ==============================================================================
+elif menu == "📥 Reportes & XLSX":
+    st.markdown("<h1 class='sura-title'>MOTOR DE EXTRACCIÓN</h1>", unsafe_allow_html=True)
+    st.markdown("Generación de reportes tabulares para manipulación externa.")
+    
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        segmento = st.selectbox("Seleccione el alcance de los datos:", ["TODOS LOS REGISTROS"] + st.session_state.custom_estados)
+    with col_r2:
+        columnas_req = st.multiselect("Columnas a incluir (Dejar vacío para todas):", 
+                                      options=df_core.columns.tolist() if not df_core.empty else [],
+                                      default=['dni', 'nombre', 'monto', 'deuda', 'estado'])
+
+    if not df_core.empty:
+        # Filtro de segmento
+        df_export = df_core.copy() if segmento == "TODOS LOS REGISTROS" else df_core[df_core['estado'] == segmento]
+        
+        # Filtro de columnas
+        if columnas_req:
+            # Asegurar que las columnas existen
+            cols_to_use = [c for c in columnas_req if c in df_export.columns]
+            df_export = df_export[cols_to_use]
+            
+        st.markdown(f"**Vista previa de la exportación ({len(df_export)} filas):**")
+        st.dataframe(df_export.head(15), use_container_width=True)
+
+        st.markdown("### 💾 Opciones de Descarga")
+        st.info("Nota: Si experimentas problemas con XLSX, utiliza el botón de CSV que es compatible con cualquier versión de Excel universalmente.")
+        
+        c_dl1, c_dl2 = st.columns(2)
+        
+        # 1. EXPORTACIÓN EXCEL NATIVA (INTENTO SEGURO)
+        with c_dl1:
+            buffer = io.BytesIO()
+            excel_disponible = False
+            try:
+                # Intentamos usar openpyxl que es más estandar, o el default de pandas
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='SURA_DATA')
+                excel_disponible = True
+            except Exception:
+                # Si falla, intentamos xlsxwriter (el que mencionaste que daba error antes)
+                try:
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        df_export.to_excel(writer, index=False, sheet_name='SURA_DATA')
+                    excel_disponible = True
+                except Exception:
+                    excel_disponible = False
+
+            if excel_disponible:
+                st.download_button(
+                    label="🟢 DESCARGAR FORMATO EXCEL (.xlsx)",
+                    data=buffer.getvalue(),
+                    file_name=f"SURA_Core_{segmento}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                st.error("Librerías Excel (openpyxl/xlsxwriter) no detectadas. Usa CSV.")
+                
+        # 2. EXPORTACIÓN CSV (FALLBACK INDESTRUCTIBLE)
+        with c_dl2:
+            csv_data = df_export.to_csv(index=False, sep=';', encoding='utf-8-sig') # sep=';' ayuda con Excel en español
+            st.download_button(
+                label="🔵 DESCARGAR FORMATO CSV (.csv)",
+                data=csv_data,
+                file_name=f"SURA_Core_{segmento}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+# ==============================================================================
+# MODULE 5: CONFIGURACIÓN Y CATÁLOGOS (UI MEJORADA - ADIÓS JSON)
+# ==============================================================================
+elif menu == "⚙️ Configuración Sistema":
+    st.markdown("<h1 class='sura-title'>AJUSTES DEL NÚCLEO</h1>", unsafe_allow_html=True)
+    
+    st.markdown("### 🏷️ Diccionario de Estados Operativos")
+    st.markdown("Gestiona las categorías permitidas para clasificar los activos dentro del TUPAC/SURA.")
+    
+    # Mostrar estados actuales en formato de "Tags" (Píldoras) en vez del JSON crudo
+    st.markdown("<div style='background: var(--bg-card); padding: 20px; border-radius: 10px; border: 1px solid var(--border-ui); margin-bottom: 20px;'>", unsafe_allow_html=True)
+    st.write("**Catálogo Activo:**")
+    html_tags = "".join([f"<span class='state-tag'>✓ {estado.upper()}</span>" for estado in st.session_state.custom_estados])
+    st.markdown(html_tags, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    st.markdown("### ➕ Registrar Nueva Categoría")
+    col_cfg1, col_cfg2 = st.columns([2, 1])
+    with col_cfg1:
+        new_e = st.text_input("Ingrese el nombre exacto de la nueva clasificación:", placeholder="Ej: Judicializado, Trámite, etc.")
+    with col_cfg2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Añadir al Diccionario", type="primary"):
+            estado_limpio = new_e.strip().lower()
+            if estado_limpio and estado_limpio not in st.session_state.custom_estados:
+                st.session_state.custom_estados.append(estado_limpio)
+                st.success(f"Estado '{estado_limpio}' inyectado en memoria correctamente.")
+                time.sleep(1)
+                st.rerun()
+            elif estado_limpio in st.session_state.custom_estados:
+                st.warning("Este estado ya existe en el catálogo.")
+            else:
+                st.error("No se puede registrar un valor vacío.")
+
+    st.divider()
+    st.markdown("### 🖥️ Detalles del Entorno")
+    sys_cols = st.columns(4)
+    with sys_cols[0]: st.metric("Motor Base", "Supabase PostgreSQL")
+    with sys_cols[1]: st.metric("Rutas API", "REST v1")
+    with sys_cols[2]: st.metric("Límite Paginación", "1000 records/req")
+    with sys_cols[3]: st.metric("Interfaz", "Streamlit UI v1")
