@@ -3,7 +3,6 @@ import pandas as pd
 import io
 import time
 from datetime import datetime
-# Asegúrate de que esta utilidad exista en tu proyecto
 from utils.ui_components import compact_currency 
 
 def render(df):
@@ -20,6 +19,16 @@ def render(df):
         st.warning("⚠️ No hay datos disponibles para generar reportes.")
         return
 
+    # --- 1. PRE-PROCESAMIENTO (CONVERSIÓN DE TEXTO A NÚMERO) ---
+    df_export = df.copy()
+    
+    # Forzamos conversión de columnas que vienen como texto desde Supabase
+    cols_numericas = ['monto', 'deuda']
+    for col in cols_numericas:
+        if col in df_export.columns:
+            # Quitamos espacios y convertimos a número. Errores se vuelven 0.
+            df_export[col] = pd.to_numeric(df_export[col], errors='coerce').fillna(0)
+
     # --- PANEL DE CONFIGURACIÓN ---
     with st.container(border=True):
         st.markdown("### ⚙️ Configuración del Reporte")
@@ -28,19 +37,20 @@ def render(df):
         with c1:
             formato = st.selectbox("Formato de salida:", ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)"])
         with c2:
-            segmento = st.multiselect("Filtrar por Estados:", options=df['estado'].unique(), default=None)
+            segmento = st.multiselect("Filtrar por Estados:", options=df_export['estado'].unique(), default=None)
         with c3:
             st.markdown("<br>", unsafe_allow_html=True)
             solo_con_cel = st.toggle("Solo con Celular", value=False)
 
     # --- FILTRADO ---
-    df_export = df.copy()
     if segmento:
         df_export = df_export[df_export['estado'].isin(segmento)]
     if solo_con_cel:
-        df_export = df_export[df_export['celular'].notna() & (df_export['celular'].astype(str).str.len() > 5)]
+        # Aseguramos que celular sea string para medir longitud
+        df_export['celular'] = df_export['celular'].astype(str).replace('nan', '')
+        df_export = df_export[df_export['celular'].str.len() > 5]
 
-    # --- VISTA PREVIA (Actualizado a estándares 2026) ---
+    # --- VISTA PREVIA ---
     st.divider()
     st.markdown(f"#### 📊 Vista previa del reporte ({len(df_export)} registros)")
     
@@ -51,7 +61,7 @@ def render(df):
             "deuda": st.column_config.NumberColumn("Deuda", format="S/ %.2f"),
             "celular": "📞 Contacto"
         },
-        width="stretch", # Cambiado de use_container_width por actualización 2026
+        width="stretch", 
         hide_index=True
     )
 
@@ -61,24 +71,25 @@ def render(df):
     nombre_archivo = f"SURA_Reporte_{timestamp}"
 
     if formato == "Excel (.xlsx)":
+        # Usamos engine 'xlsxwriter' ya que confirmamos que está instalado
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_export.to_excel(writer, index=False, sheet_name='Padron_Clientes')
             
-            # Resumen Ejecutivo automático
             resumen = df_export.groupby('estado').agg({
-                'dni': 'count', 'monto': 'sum', 'deuda': 'sum'
-            }).rename(columns={'dni': 'Cant_Clientes'}).reset_index()
+                'monto': 'sum', 
+                'deuda': 'sum'
+            }).reset_index()
             resumen.to_excel(writer, index=False, sheet_name='Resumen_SURA')
             
-            # Formato estético
             workbook = writer.book
             header_format = workbook.add_format({'bold': True, 'bg_color': '#1E88E5', 'font_color': 'white'})
+            
             for sheet_name in ['Padron_Clientes', 'Resumen_SURA']:
                 worksheet = writer.sheets[sheet_name]
-                cols = df_export.columns if sheet_name == 'Padron_Clientes' else resumen.columns
-                for col_num, value in enumerate(cols):
+                columnas = df_export.columns if sheet_name == 'Padron_Clientes' else resumen.columns
+                for col_num, value in enumerate(columnas):
                     worksheet.write(0, col_num, value, header_format)
-                    worksheet.set_column(col_num, col_num, 15)
+                    worksheet.set_column(col_num, col_num, 18)
         
         mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         nombre_archivo += ".xlsx"
@@ -95,7 +106,7 @@ def render(df):
         mime_type = "application/json"
         nombre_archivo += ".json"
 
-    # --- BOTÓN DE DESCARGA (Actualizado a estándares 2026) ---
+    # --- BOTÓN DE DESCARGA Y TOTALES ---
     st.markdown("<br>", unsafe_allow_html=True)
     col_dl, col_stats = st.columns([1, 2])
     
@@ -105,11 +116,12 @@ def render(df):
             data=output.getvalue(),
             file_name=nombre_archivo,
             mime=mime_type,
-            width="stretch", # Actualizado
+            width="stretch",
             type="primary"
         )
     
     with col_stats:
+        # Ahora que son numéricos, la suma funcionará perfecto
         m_total = compact_currency(df_export['monto'].sum())
         d_total = compact_currency(df_export['deuda'].sum())
         st.info(f"💰 **Capital:** {m_total} | **Deuda:** {d_total}")
