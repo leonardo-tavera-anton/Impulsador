@@ -4,64 +4,57 @@ from utils.data_engine import supabase
 
 def render():
     st.markdown("""
-        <div style='background: #1f6feb; padding:20px; border-radius:10px; color:white; margin-bottom:20px;'>
-            <h2 style='margin:0;'>📤 MÓDULO DE IMPORTACIÓN</h2>
-            <p style='margin:0; opacity:0.8;'>SURA v7.5 | Auditoría Nuevo Chimbote 2026</p>
+        <div style='background: #161b22; padding:20px; border-radius:10px; border: 1px solid #30363d; color:white; margin-bottom:20px;'>
+            <h2 style='margin:0;'>📤 IMPORTACIÓN SURA v7.5</h2>
+            <p style='margin:0; opacity:0.8;'>Limpieza Forzada y Filtro de Duplicados</p>
         </div>
     """, unsafe_allow_html=True)
 
-    st.write("### 📁 1. Cargar archivo Excel")
-    
-    # Cargador de archivos
-    file = st.file_uploader(
-        "Arrastra tu archivo .xlsx aquí", 
-        type=["xlsx", "xls"], 
-        key="uploader_sura_v7"
-    )
+    file = st.file_uploader("Sube el Excel de clientes", type=["xlsx", "xls"], key="final_uploader")
 
-    # Si el archivo ya aparece como en tu foto:
-    if file is not None:
+    if file:
         try:
-            # Leemos el Excel
-            df_import = pd.read_excel(file)
+            df = pd.read_excel(file)
+            df.columns = [str(c).lower().strip() for c in df.columns]
             
-            # Limpiamos nombres de columnas (Pasamos a minúsculas: dni, nombre, monto...)
-            df_import.columns = [str(c).lower().strip() for c in df_import.columns]
+            # 1. Limpiar DNI y descartar nulos
+            if 'dni' in df.columns:
+                df['dni'] = df['dni'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+                df = df[df['dni'].notna()]
+                df = df[df['dni'] != 'nan']
+                df = df[df['dni'] != '']
             
-            st.success(f"✅ Archivo cargado correctamente: {len(df_import)} filas detectadas.")
-            
-            # Mostramos una vista previa para que estés seguro
-            with st.expander("🔍 Ver vista previa de datos"):
-                st.dataframe(df_import.head(10), use_container_width=True)
+            for col in ['monto', 'cuota', 'deuda']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
-            st.divider()
-            
-            # --- EL BOTÓN DE SUBIDA ---
-            st.write("### 🚀 2. Sincronizar con la nube")
-            if st.button("🔥 INICIAR SUBIDA A SUPABASE", type="primary", use_container_width=True):
-                with st.status("Subiendo datos a la base de datos...", expanded=True) as status:
-                    # Convertimos a formato compatible con Supabase
-                    records = df_import.to_dict(orient="records")
-                    
-                    # Subimos en bloques de 200 para que no explote
+            df['historial'] = [{} for _ in range(len(df))]
+
+            cols_db = ['dni', 'nombre', 'celular', 'monto', 'cuota', 'deuda', 'estado', 'historial']
+            df_final = df[[c for c in cols_db if c in df.columns]].copy()
+
+            # --- SOLUCIÓN AL ERROR 21000 ---
+            # Elimina las filas con DNI repetido, conservando el último que aparece en el Excel
+            df_final = df_final.drop_duplicates(subset=['dni'], keep='last')
+
+            def clean_dict(d):
+                return {k: (v if pd.notnull(v) else None) for k, v in d.items()}
+
+            records = [clean_dict(r) for r in df_final.to_dict(orient="records")]
+
+            st.success(f"✅ {len(records)} registros únicos listos. Duplicados eliminados.")
+
+            if st.button("🚀 SUBIR A SUPABASE", type="primary", use_container_width=True):
+                with st.status("Sincronizando con la nube...") as status:
                     batch_size = 200
-                    total = len(records)
-                    
-                    for i in range(0, total, batch_size):
+                    for i in range(0, len(records), batch_size):
                         batch = records[i:i+batch_size]
-                        # El 'upsert' actualiza si el DNI ya existe
                         supabase.table("clientes").upsert(batch).execute()
-                        status.write(f"Progreso: {min(i + batch_size, total)} de {total} filas...")
+                        status.write(f"Cargando: {min(i+batch_size, len(records))} de {len(records)}")
                     
                     status.update(label="✅ ¡Sincronización Exitosa!", state="complete")
-                    st.balloons()
-                    
-                    # Limpiamos el caché para que el Dashboard vea los cambios
                     st.cache_data.clear()
-                    st.success("¡Listo! Ya puedes ver los datos actualizados en la pestaña GESTIÓN.")
+                    st.balloons()
 
         except Exception as e:
-            st.error(f"❌ Error al procesar el Excel: {e}")
-            st.info("Asegúrate de que el archivo no esté protegido con contraseña.")
-    else:
-        st.info("Esperando archivo... El botón de subida aparecerá automáticamente al cargar el Excel.")
+            st.error(f"❌ Error crítico: {e}")

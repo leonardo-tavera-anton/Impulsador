@@ -11,33 +11,79 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilos Globales para ocultar Sidebar y mejorar Tabs
+# Estilos Globales para ocultar Sidebar y mejorar Tabs (Mantenidos y Reforzados)
 st.markdown("""
     <style>
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     .block-container { padding-top: 1rem !important; }
     header { visibility: hidden !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 15px; background-color: #0d1117; padding: 10px; border-radius: 10px; }
-    .stTabs [data-baseweb="tab"] { height: 45px; background-color: #161b22; border-radius: 5px; color: white; }
-    .stTabs [aria-selected="true"] { background-color: #58a6ff !important; color: black !important; }
+    .stTabs [data-baseweb="tab-list"] { 
+        gap: 15px; 
+        background-color: #0d1117; 
+        padding: 10px; 
+        border-radius: 10px; 
+    }
+    .stTabs [data-baseweb="tab"] { 
+        height: 45px; 
+        background-color: #161b22; 
+        border-radius: 5px; 
+        color: white; 
+        border: none;
+        padding: 0px 20px;
+    }
+    .stTabs [aria-selected="true"] { 
+        background-color: #58a6ff !important; 
+        color: black !important; 
+        font-weight: bold;
+    }
+    /* Estilo para los inputs del Login */
+    .stTextInput input {
+        background-color: #0d1117;
+        color: white;
+        border: 1px solid #30363d;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# 2. CARGA DE DATOS CENTRALIZADA
+# 2. CARGA DE DATOS CENTRALIZADA (PAGINACIÓN PARA > 1000 REGISTROS)
 @st.cache_data(ttl=300)
 def load_data():
     try:
-        response = supabase.table("clientes").select("*").execute()
-        df = pd.DataFrame(response.data)
+        all_rows = []
+        limit = 1000
+        offset = 0
+        
+        # Bucle para traer la base completa (6,000+ registros)
+        while True:
+            response = supabase.table("clientes").select("*").range(offset, offset + limit - 1).execute()
+            data = response.data
+            if not data:
+                break
+            all_rows.extend(data)
+            if len(data) < limit:
+                break
+            offset += limit
+            
+        df = pd.DataFrame(all_rows)
+        
         if not df.empty:
             # Forzamos minúsculas para evitar KeyError
             df.columns = [str(c).lower().strip() for c in df.columns]
-            df['dni'] = df['dni'].astype(str)
+            # Limpieza de DNI para evitar el .0 de Excel
+            df['dni'] = df['dni'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            
+            # Limpieza de montos numéricos
             for col in ['monto', 'cuota', 'deuda']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
+            # Asegurar que la columna historial exista como dict
+            if 'historial' not in df.columns:
+                df['historial'] = [{} for _ in range(len(df))]
+                
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"Error crítico en carga de datos: {e}")
         return pd.DataFrame()
 
 # 3. CONTROL DE ACCESO
@@ -45,46 +91,52 @@ if "auth" not in st.session_state:
     st.session_state.auth = False
 
 if not st.session_state.auth:
-    st.markdown("<h1 style='text-align:center;'>🔐 SURA v7.5</h1>", unsafe_allow_html=True)
-    with st.container(border=True):
-        col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
-        with col_l2:
-            u = st.text_input("Usuario")
-            p = st.text_input("Clave", type="password")
-            if st.form_submit_button("ENTRAR", width="stretch") if False else st.button("ENTRAR", width="stretch"):
-                if u == "admin" and p == "chimbote2026":
-                    st.session_state.auth = True
-                    st.session_state.user_sura = "Leonardo Tavera"
-                    st.rerun()
-                else:
-                    st.error("Credenciales incorrectas")
+    st.markdown("<h1 style='text-align:center; color: #58a6ff; margin-top: 50px;'>🔐 SURA v7.5</h1>", unsafe_allow_html=True)
+    
+    col_l1, col_l2, col_l3 = st.columns([1, 1.5, 1])
+    with col_l2:
+        with st.container(border=True):
+            # Usamos un formulario para capturar el ENTER del teclado
+            with st.form("login_form"):
+                u = st.text_input("Usuario", placeholder="Ingrese su usuario")
+                p = st.text_input("Clave", type="password", placeholder="••••••••")
+                submit = st.form_submit_button("ENTRAR", use_container_width=True)
+                
+                if submit:
+                    if u == "admin" and p == "admin":
+                        st.session_state.auth = True
+                        st.session_state.user_sura = "Leonardo Tavera"
+                        st.success("Acceso concedido")
+                        st.rerun()
+                    else:
+                        st.error("Credenciales incorrectas")
 else:
-    # Header de Usuario
+    # Header de Usuario (Tu diseño original)
     head1, head2 = st.columns([4, 1])
     with head1:
-        st.subheader(f"💎 SURA v7.5 | {st.session_state.user_sura}")
+        st.markdown(f"### 💎 SURA v7.5 | <span style='color:#58a6ff;'>{st.session_state.user_sura}</span>", unsafe_allow_html=True)
     with head2:
-        if st.button("🔄 RECARGAR", width="stretch"):
+        if st.button("🔄 RECARGAR DATA", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
+    # Carga de la data global
     df_main = load_data()
 
-    # 4. NAVEGACIÓN POR TABS
+    # 4. NAVEGACIÓN POR TABS (Tus 3 tabs originales)
     tab1, tab2, tab3 = st.tabs(["📊 DASHBOARD", "📋 GESTIÓN", "📤 IMPORTACIÓN"])
 
     with tab1:
         if not df_main.empty:
             dashboard.render(df_main)
         else:
-            st.info("Cargando dashboard o tabla vacía...")
+            st.info("No hay datos para mostrar en el Dashboard.")
 
     with tab2:
         if not df_main.empty:
             gestion.render(df_main)
         else:
-            st.warning("No hay datos para gestionar actualmente.")
+            st.warning("La tabla está vacía. Importe un archivo para comenzar.")
 
     with tab3:
-        # La importación siempre está disponible
         importacion.render()
