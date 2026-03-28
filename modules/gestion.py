@@ -1,70 +1,84 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from utils.data_engine import supabase 
 
 def render(df):
-    # 1. ESTILO VISUAL COMPACTO
-    st.markdown("""
-        <style>
-        .block-container { padding-top: 1rem !important; }
-        [data-testid="stMetric"] { padding: 5px 10px !important; }
-        /* Reduce el tamaño de letra de la tabla para que sea más denso */
-        [data-testid="stDataEditor"] div { font-size: 11px !important; }
-        </style>
-        <div style="background: linear-gradient(90deg, #0D47A1, #1E88E5); padding:15px; border-radius:10px; color:white; margin-bottom:15px;">
-            <h3 style='margin:0;'>💎 SURA: GESTIÓN DE PADRONES</h3>
-            <p style='margin:0; opacity:0.8; font-size:0.8rem;'>Nuevo Chimbote 2026 | Vista Compacta</p>
+    # Lógica de Mes
+    fecha = datetime.now()
+    meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+    mes_key = f"{meses[fecha.month-1]}-{str(fecha.year)[2:]}"
+
+    # Título Estilo SURA
+    st.markdown(f"""
+        <div style="background: linear-gradient(90deg, #1A237E, #0D47A1); padding:15px; border-radius:10px; color:white; margin-bottom:20px; border-left: 5px solid #58a6ff;">
+            <h3 style='margin:0;'>📋 AUDITORÍA SURA v7.5</h3>
+            <p style='margin:0; opacity:0.8;'>Contribuyentes Nuevo Chimbote | Periodo: {mes_key}</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # 2. CÁLCULOS Y VENTANA DE MESES
-    meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-    idx = datetime.now().month - 1
-    ventana = [meses[(idx + i) % 12] for i in range(3)]
+    # Filtros Rápidos
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        busc = st.text_input("Buscar DNI/Nombre", placeholder="Escriba aquí...", label_visibility="collapsed")
+    with c2:
+        est = st.multiselect("Estado", ["activo", "retiró", "pendiente", "cesante"], default=["activo", "pendiente"])
+    with c3:
+        audit = st.selectbox("Filtro", ["Todos", "Gestionados", "Pendientes"])
 
-    # 3. KPIs RESUMIDOS
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Registros", f"{len(df):,}")
-    k2.metric("Cartera", f"S/ {df['Monto'].sum():,.0f}")
-    k3.metric("Deuda", f"S/ {df['deuda'].sum():,.0f}")
-    k4.metric("Mes", ventana[0])
+    # Procesar Vista
+    df_view = df.copy()
+    
+    # Check de historial (JSONB de tu SQL)
+    df_view['ok'] = df_view['historial'].apply(lambda x: x.get(mes_key, False))
 
-    # 4. FILTROS EN UNA SOLA LÍNEA
-    f1, f2 = st.columns([3, 1])
-    with f1:
-        search = st.text_input("", placeholder="🔍 Buscar por DNI o Nombre...", label_visibility="collapsed")
-    with f2:
-        solo_deuda = st.toggle("Solo Deuda", value=False)
+    if busc:
+        df_view = df_view[df_view['dni'].str.contains(busc) | df_view['nombre'].str.contains(busc, case=False, na=False)]
+    if est:
+        df_view = df_view[df_view['estado'].str.lower().isin([s.lower() for s in est])]
+    if audit == "Gestionados":
+        df_view = df_view[df_view['ok'] == True]
+    elif audit == "Pendientes":
+        df_view = df_view[df_view['ok'] == False]
 
-    # Lógica de filtrado
-    df_f = df
-    if search:
-        df_f = df[df['dni'].astype(str).str.contains(search) | df['nombre'].str.contains(search, case=False)]
-    if solo_deuda:
-        df_f = df_f[df_f['deuda'] > 0]
-
-    # 5. TABLA ULTRA-COMPACTA (SIN HISTORIAL)
-    # Definimos el orden exacto para ocultar lo que no queremos
-    columnas_visibles = ["dni", "nombre", "Numero", "Monto", "deuda", "cuota"] + ventana
-
-    st.data_editor(
-        df_f,
+    # Tabla Maestra
+    res = st.data_editor(
+        df_view,
         use_container_width=True,
         hide_index=True,
-        height=550,
-        column_order=columnas_visibles, # <--- Aquí se elimina 'historial' y 'estado'
+        height=500,
+        column_order=["dni", "nombre", "estado", "ok", "monto", "deuda"],
         column_config={
-            "dni": st.column_config.TextColumn("DNI", width=80, disabled=True),
-            "nombre": st.column_config.TextColumn("Cliente", width=250, disabled=True),
-            "Numero": st.column_config.TextColumn("WhatsApp", width=100),
-            "Monto": st.column_config.NumberColumn("Monto", format="S/ %d", width=70),
-            "deuda": st.column_config.NumberColumn("Deuda", format="S/ %d", width=70),
-            "cuota": st.column_config.NumberColumn("Cuota", format="S/ %d", width=70),
-            **{m: st.column_config.CheckboxColumn(m, width=50) for m in ventana}
+            "dni": st.column_config.TextColumn("DNI", disabled=True),
+            "nombre": st.column_config.TextColumn("Nombre", disabled=True),
+            "estado": st.column_config.SelectboxColumn("Estado", options=["activo", "retiró", "pendiente", "cesante"]),
+            "ok": st.column_config.CheckboxColumn(f"Audit {mes_key.split('-')[0]}"),
+            "monto": st.column_config.NumberColumn("Monto S/", format="%.2f"),
+            "deuda": st.column_config.NumberColumn("Deuda S/", format="%.2f"),
         },
-        key="editor_gestion_final"
+        key="editor_master_2026"
     )
 
-    # 6. BOTÓN DE GUARDADO
-    if st.button("🚀 ACTUALIZAR SUPABASE", type="primary", use_container_width=True):
-        st.success("Cambios sincronizados correctamente.")
+    # Guardado
+    if st.button("💾 SINCRONIZAR CON SUPABASE", type="primary", use_container_width=True):
+        changes = st.session_state.editor_master_2026.get("edited_rows", {})
+        if changes:
+            try:
+                for idx, vals in changes.items():
+                    fila = df_view.iloc[int(idx)]
+                    id_dni = fila['dni']
+                    
+                    # Si cambió el check de auditoría, actualizamos el JSONB
+                    if 'ok' in vals:
+                        nuevo_hist = fila['historial'].copy()
+                        nuevo_hist[mes_key] = vals['ok']
+                        vals['historial'] = nuevo_hist
+                        del vals['ok']
+                    
+                    supabase.table("clientes").update(vals).eq("dni", id_dni).execute()
+                
+                st.success("Base de datos actualizada con éxito.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al subir: {e}")

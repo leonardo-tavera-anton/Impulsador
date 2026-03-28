@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 
 def render(df):
-    # 1. ESTILO SURA
+    # 1. ESTILO SURA (Tu diseño original)
     st.markdown("""
         <div style="background: linear-gradient(90deg, #1e3a8a, #3b82f6); padding:20px; border-radius:12px; color:white; margin-bottom:20px;">
             <h2 style='margin:0;'>📊 DASHBOARD: TENDENCIAS Y DESEMBOLSOS</h2>
@@ -11,39 +11,51 @@ def render(df):
         </div>
     """, unsafe_allow_html=True)
 
-    # 2. SINCRONIZACIÓN DE COLUMNAS
-    col_monto = 'Monto' if 'Monto' in df.columns else 'monto'
-    col_deuda = 'deuda' if 'deuda' in df.columns else 'DEUDA'
-    col_estado = 'estado' if 'estado' in df.columns else 'ESTADO'
+    # Si el dataframe viene vacío, abortamos para evitar más errores
+    if df.empty:
+        st.warning("No hay datos disponibles para mostrar en el Dashboard.")
+        return
 
-    # Asegurar que los montos sean numéricos
-    df[col_monto] = pd.to_numeric(df[col_monto], errors='coerce').fillna(0)
-    df[col_deuda] = pd.to_numeric(df[col_deuda], errors='coerce').fillna(0)
+    # 2. SINCRONIZACIÓN DINÁMICA DE COLUMNAS (Solución al KeyError)
+    # Buscamos las columnas ignorando mayúsculas/minúsculas
+    cols = {c.lower(): c for c in df.columns}
+    
+    col_monto = cols.get('monto', df.columns[0]) # Si no existe 'monto', toma la primera columna por defecto
+    col_deuda = cols.get('deuda', df.columns[0])
+    col_estado = cols.get('estado', df.columns[0])
 
-    # 3. FILTRO DE DESEMBOLSOS (Tu solicitud específica)
-    # Filtramos filas que contengan "desembol" en su etiqueta de estado
-    df_desembolsos = df[df[col_estado].astype(str).str.contains('desembol', case=False, na=False)]
+    # 3. LIMPIEZA DE DATOS SEGURA
+    # Usamos .copy() para no afectar el dataframe original de otros módulos
+    df_clean = df.copy()
+    
+    try:
+        df_clean[col_monto] = pd.to_numeric(df_clean[col_monto], errors='coerce').fillna(0)
+        df_clean[col_deuda] = pd.to_numeric(df_clean[col_deuda], errors='coerce').fillna(0)
+    except Exception as e:
+        st.error(f"Error al procesar valores numéricos: {e}")
 
-    # 4. MÉTRICAS SUPERIORES
+    # 4. FILTRO DE DESEMBOLSOS
+    # Buscamos cualquier estado que contenga "desembol"
+    df_desembolsos = df_clean[df_clean[col_estado].astype(str).str.contains('desembol', case=False, na=False)]
+
+    # 5. MÉTRICAS SUPERIORES
     m1, m2, m3 = st.columns(3)
     with m1:
-        st.metric("Total Clientes", f"{len(df):,}")
+        st.metric("Total Clientes", f"{len(df_clean):,}")
     with m2:
-        st.metric("Cartera Total", f"S/ {df[col_monto].sum():,.0f}")
+        st.metric("Cartera Total", f"S/ {df_clean[col_monto].sum():,.2f}")
     with m3:
         st.metric("Total Desembolsados", f"{len(df_desembolsos):,}")
 
     st.divider()
 
-    # 5. ANÁLISIS DE TENDENCIAS (MONTOS QUE MÁS RETIRAN)
+    # 6. ANÁLISIS DE TENDENCIAS
     st.subheader("🎯 Tendencias de Retiro (Desembolsos)")
     
     if not df_desembolsos.empty:
         col_a, col_b = st.columns([2, 1])
         
         with col_a:
-            # Gráfico de barras de los montos más frecuentes en desembolsos
-            # Agrupamos por rangos para detectar esos de "20 mil y tanto"
             fig_trend = px.histogram(
                 df_desembolsos, 
                 x=col_monto, 
@@ -52,40 +64,49 @@ def render(df):
                 labels={col_monto: 'Monto del Retiro'},
                 color_discrete_sequence=['#10b981']
             )
+            fig_trend.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white")
             st.plotly_chart(fig_trend, use_container_width=True)
             
         with col_b:
             st.markdown("**Top Montos Frecuentes**")
-            # Mostramos los montos que más se repiten en desembolsos
             top_montos = df_desembolsos[col_monto].value_counts().head(5)
             for monto, cant in top_montos.items():
                 st.write(f"💰 **S/ {monto:,.0f}**: {cant} personas")
     else:
-        st.warning("No se encontraron registros con la etiqueta 'desembolso'.")
+        st.info("No se detectaron registros con estados de 'Desembolso' para el análisis de tendencias.")
 
     st.divider()
 
-    # 6. COMPARATIVA GENERAL
+    # 7. COMPARATIVA GENERAL
     g1, g2 = st.columns(2)
     with g1:
         st.subheader("Deuda vs Capital")
-        fig_pie = px.pie(
-            names=['Monto Neto', 'Deuda'], 
-            values=[df[col_monto].sum() - df[col_deuda].sum(), df[col_deuda].sum()],
-            hole=0.4,
-            color_discrete_sequence=['#3b82f6', '#ef4444']
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        total_monto = df_clean[col_monto].sum()
+        total_deuda = df_clean[col_deuda].sum()
+        
+        # Evitar división por cero en el gráfico
+        if total_monto > 0:
+            fig_pie = px.pie(
+                names=['Capital Neto', 'Deuda'], 
+                values=[max(0, total_monto - total_deuda), total_deuda],
+                hole=0.4,
+                color_discrete_sequence=['#3b82f6', '#ef4444']
+            )
+            fig_pie.update_layout(showlegend=True, paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.write("Sin datos de capital.")
 
     with g2:
         st.subheader("Resumen de Estados")
-        # Verificamos qué etiquetas son las más comunes
-        estado_counts = df[col_estado].value_counts().head(6)
-        fig_estados = px.bar(
-            x=estado_counts.index, 
-            y=estado_counts.values,
-            labels={'x': 'Etiqueta', 'y': 'Cantidad'},
-            color=estado_counts.values,
-            color_continuous_scale='Blues'
-        )
-        st.plotly_chart(fig_estados, use_container_width=True)
+        estado_counts = df_clean[col_estado].value_counts().head(6)
+        if not estado_counts.empty:
+            fig_estados = px.bar(
+                x=estado_counts.index, 
+                y=estado_counts.values,
+                labels={'x': 'Etiqueta', 'y': 'Cantidad'},
+                color=estado_counts.values,
+                color_continuous_scale='Blues'
+            )
+            fig_estados.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+            st.plotly_chart(fig_estados, use_container_width=True)
