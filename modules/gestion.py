@@ -9,7 +9,6 @@ def render(df):
         <style>
         [data-testid="stDataEditor"] { width: fit-content !important; min-width: 100%; }
         .stCheckbox { margin-bottom: 0px; }
-        /* Reduce el espacio entre filas para ver más datos */
         [data-testid="stDataEditor"] div { font-size: 14px; }
         </style>
     """, unsafe_allow_html=True)
@@ -43,17 +42,27 @@ def render(df):
     df_display = df.copy()
     df_display.insert(0, 'N°', range(1, len(df_display) + 1))
     
-    meses_opciones = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+    # Opciones extendidas: Normales y Negativos (n.)
+    meses_normales = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+    meses_negativos = [f"n.{m}" for m in meses_normales]
+    todas_las_opciones = meses_normales + meses_negativos
+    
     meses_full = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    def extraer_meses_por_ano(h, ano):
+    def extraer_historial_completo(h, ano):
+        seleccionados = []
         if isinstance(h, dict) and ano in h:
             ano_data = h[ano]
-            return [m[:3] for m, v in ano_data.items() if v == 1]
-        return []
+            for m_full, valor in ano_data.items():
+                m_abreviado = m_full[:3]
+                if valor == 1:
+                    seleccionados.append(m_abreviado)
+                elif valor == 0:
+                    seleccionados.append(f"n.{m_abreviado}")
+        return seleccionados
 
-    df_display['Historial'] = df_display['historial'].apply(lambda h: extraer_meses_por_ano(h, ano_activo))
+    df_display['Historial'] = df_display['historial'].apply(lambda h: extraer_historial_completo(h, ano_activo))
 
     # Filtros
     if busqueda:
@@ -76,40 +85,50 @@ def render(df):
             "nombre": st.column_config.TextColumn("Nombre", width=250),
             "celular": st.column_config.TextColumn("Celular", width=110),
             "estado": st.column_config.TextColumn("Estado", width=120),
-            "Historial": st.column_config.MultiselectColumn(f"Meses {ano_activo}", options=meses_opciones, width=200),
+            "Historial": st.column_config.MultiselectColumn(
+                f"Registro {ano_activo}", 
+                options=todas_las_opciones, 
+                width=250,
+                help="Mes = Registrado por ti (1) | n.Mes = Otro/Desembolso (0)"
+            ),
             "monto": st.column_config.NumberColumn("Monto", format="%.2f", width=85),
             "deuda": st.column_config.NumberColumn("Deuda", format="%.2f", width=85),
         },
         disabled=cols_bloqueadas,
         hide_index=True,
         use_container_width=True,
-        key=f"gestion_v11_{ano_activo}"
+        key=f"gestion_v12_{ano_activo}"
     )
 
-    # 6. GUARDADO MASIVO (UPSERT) - AQUÍ ESTÁ LA VELOCIDAD
+    # 6. GUARDADO MASIVO (UPSERT)
     if modo_edicion:
-        st.warning(f"⚠️ Estás en Modo Edición ({ano_activo}). Los cambios se aplicarán al guardar.")
-        if st.button(f"🚀 GUARDAR TODO AL INSTANTE ({ano_activo})", type="primary", use_container_width=True):
-            with st.status("Preparando envío masivo...") as status:
-                
+        st.warning(f"⚠️ Modo Edición Activo ({ano_activo}).")
+        if st.button(f"🚀 GUARDAR TODO ({ano_activo})", type="primary", use_container_width=True):
+            with st.status("Sincronizando con Supabase...") as status:
                 payload_masivo = []
-                
                 for _, row in edited_df.iterrows():
                     dni_v = row['dni']
+                    fila_orig = df[df['dni'] == dni_v]
+                    hist_total = fila_orig.iloc[0]['historial'] if not fila_orig.empty else {}
+                    if not isinstance(hist_total, dict): hist_total = {}
                     
-                    # Recuperar historial previo del DataFrame original
-                    fila_original = df[df['dni'] == dni_v]
-                    historial_total = fila_original.iloc[0]['historial'] if not fila_original.empty else {}
-                    if not isinstance(historial_total, dict): historial_total = {}
+                    lista_ui = row['Historial']
+                    # Lógica: Si el mes está normal es 1, si está con n. es 0, si no está no se registra o queda como null/0
+                    dic_ano = {}
+                    for m_full in meses_full:
+                        m_abr = m_full[:3]
+                        if m_abr in lista_ui:
+                            dic_ano[m_full] = 1
+                        elif f"n.{m_abr}" in lista_ui:
+                            dic_ano[m_full] = 0
+                        # Si no está ninguno, puedes elegir no ponerlo o ponerlo como 0. 
+                        # Aquí lo omitimos para no llenar el JSON de datos vacíos.
                     
-                    # Actualizar el año seleccionado
-                    lista_meses_ui = row['Historial']
-                    historial_total[ano_activo] = {m: (1 if m[:3] in lista_meses_ui else 0) for m in meses_full}
+                    hist_total[ano_activo] = dic_ano
                     
-                    # Agregar a la lista masiva
                     payload_masivo.append({
                         "dni": dni_v,
-                        "historial": historial_total,
+                        "historial": hist_total,
                         "celular": str(row['celular']),
                         "estado": str(row['estado']),
                         "monto": float(row['monto']),
@@ -117,11 +136,10 @@ def render(df):
                     })
                 
                 try:
-                    # UPSERT envía todos los registros en una sola petición HTTP
                     if payload_masivo:
                         supabase.table("clientes").upsert(payload_masivo).execute()
-                        status.update(label="✅ ¡Sincronización masiva exitosa!", state="complete")
+                        status.update(label="✅ Datos actualizados con éxito.", state="complete")
                         st.cache_data.clear()
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Error crítico durante el guardado: {e}")
+                    st.error(f"Error: {e}")
