@@ -4,11 +4,13 @@ from datetime import datetime
 from utils.data_engine import supabase
 
 def render(df):
-    # 1. CSS PARA DISEÑO COMPACTO Y PROFESIONAL
+    # 1. CSS PARA DISEÑO COMPACTO Y RENDIMIENTO
     st.markdown("""
         <style>
         [data-testid="stDataEditor"] { width: fit-content !important; min-width: 100%; }
         .stCheckbox { margin-bottom: 0px; }
+        /* Reduce el espacio entre filas para ver más datos */
+        [data-testid="stDataEditor"] div { font-size: 14px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -19,15 +21,14 @@ def render(df):
         </div>
     """, unsafe_allow_html=True)
 
-    # 2. SELECCIÓN DE PERIODO (Año y Seguro de Edición)
+    # 2. SELECCIÓN DE PERIODO Y SEGURO
     c_ano, c_edit, c_empty = st.columns([1, 1.2, 2])
     with c_ano:
-        # Generamos lista de años del 2026 al 2040
         anos_disponibles = [str(a) for a in range(2026, 2041)]
         ano_activo = st.selectbox("📅 Año", anos_disponibles, index=0)
     
     with c_edit:
-        st.write("") # Espaciador
+        st.write("") 
         modo_edicion = st.toggle("🔓 Modo Edición", help="Activa para modificar meses o montos.")
 
     # 3. FILTROS COMPACTOS
@@ -38,13 +39,14 @@ def render(df):
         lista_estados = df['estado'].unique().tolist() if 'estado' in df.columns else []
         estado_filtro = st.multiselect("Estado", lista_estados)
 
-    # 4. PROCESAMIENTO DE DATOS MULTIANUAL
+    # 4. PROCESAMIENTO DE DATOS
     df_display = df.copy()
     df_display.insert(0, 'N°', range(1, len(df_display) + 1))
     
     meses_opciones = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+    meses_full = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    # Lógica para leer el historial anidado: historial -> { "2026": {"Enero": 1}, "2027": {...} }
     def extraer_meses_por_ano(h, ano):
         if isinstance(h, dict) and ano in h:
             ano_data = h[ano]
@@ -81,41 +83,45 @@ def render(df):
         disabled=cols_bloqueadas,
         hide_index=True,
         use_container_width=True,
-        key=f"gestion_v10_{ano_activo}" # Key dinámica por año para evitar conflictos
+        key=f"gestion_v11_{ano_activo}"
     )
 
-    # 6. GUARDADO CON ESTRUCTURA ANIDADA
+    # 6. GUARDADO MASIVO (UPSERT) - AQUÍ ESTÁ LA VELOCIDAD
     if modo_edicion:
-        st.warning(f"⚠️ Editando datos del año {ano_activo}. Revisa antes de guardar.")
-        if st.button(f"💾 GUARDAR CAMBIOS {ano_activo}", type="primary", use_container_width=True):
-            with st.status("Sincronizando historial multianual...") as status:
+        st.warning(f"⚠️ Estás en Modo Edición ({ano_activo}). Los cambios se aplicarán al guardar.")
+        if st.button(f"🚀 GUARDAR TODO AL INSTANTE ({ano_activo})", type="primary", use_container_width=True):
+            with st.status("Preparando envío masivo...") as status:
+                
+                payload_masivo = []
+                
                 for _, row in edited_df.iterrows():
                     dni_v = row['dni']
                     
-                    # Recuperar historial total de la base de datos
-                    historial_total = df[df['dni'] == dni_v].iloc[0]['historial']
+                    # Recuperar historial previo del DataFrame original
+                    fila_original = df[df['dni'] == dni_v]
+                    historial_total = fila_original.iloc[0]['historial'] if not fila_original.empty else {}
                     if not isinstance(historial_total, dict): historial_total = {}
                     
-                    # Crear/Actualizar el diccionario del año específico
+                    # Actualizar el año seleccionado
                     lista_meses_ui = row['Historial']
-                    meses_full = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
-                                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-                    
                     historial_total[ano_activo] = {m: (1 if m[:3] in lista_meses_ui else 0) for m in meses_full}
                     
-                    payload = {
+                    # Agregar a la lista masiva
+                    payload_masivo.append({
+                        "dni": dni_v,
                         "historial": historial_total,
                         "celular": str(row['celular']),
                         "estado": str(row['estado']),
                         "monto": float(row['monto']),
                         "deuda": float(row['deuda'])
-                    }
-                    
-                    try:
-                        supabase.table("clientes").update(payload).eq("dni", dni_v).execute()
-                    except Exception as e:
-                        st.error(f"Error en DNI {dni_v}: {e}")
+                    })
                 
-                status.update(label=f"✅ Base de datos {ano_activo} actualizada.", state="complete")
-                st.cache_data.clear()
-                st.rerun()
+                try:
+                    # UPSERT envía todos los registros en una sola petición HTTP
+                    if payload_masivo:
+                        supabase.table("clientes").upsert(payload_masivo).execute()
+                        status.update(label="✅ ¡Sincronización masiva exitosa!", state="complete")
+                        st.cache_data.clear()
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error crítico durante el guardado: {e}")
