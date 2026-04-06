@@ -3,6 +3,13 @@ import pandas as pd
 from datetime import datetime
 from utils.data_engine import supabase
 
+# OPTIMIZACIÓN 1: Constantes globales para no recalcularlas cada segundo
+MESES_NORMALES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+MESES_NEGATIVOS = [f"🔴 n.{m}" for m in MESES_NORMALES]
+TODAS_LAS_OPCIONES = MESES_NORMALES + MESES_NEGATIVOS
+MESES_FULL = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
 def render(df):
     # 1. CSS PARA DISEÑO COMPACTO Y LIMPIO
     st.markdown("""
@@ -16,7 +23,7 @@ def render(df):
     st.markdown(f"""
         <div style="background: linear-gradient(90deg, #1e3a8a, #3b82f6); padding:15px; border-radius:10px; color:white; margin-bottom:15px;">
             <h3 style='margin:0;'>📋 GESTIÓN SURA v7.5 - INTELIGENTE</h3>
-            <p style='margin:0; opacity:0.8;'>Nuevo Chimbote | Búsqueda Excel y Guardado Automático</p>
+            <p style='margin:0; opacity:0.8;'>Nuevo Chimbote | Búsqueda Rápida y Guardado Automático</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -26,31 +33,27 @@ def render(df):
         anos_disponibles = [str(a) for a in range(2026, 2041)]
         ano_activo = st.selectbox("📅 Año de Gestión", anos_disponibles, index=0)
     with c_msg:
-        st.write("") # Espaciador
+        st.write("") 
         st.success("⚡ **Autosave Activo:** Los cambios se guardan al instante al salir de la celda.")
 
     # 3. FILTROS
     f1, f2 = st.columns([3, 1])
     with f1:
-        busqueda = st.text_input("🔍 Buscar (Resalta y mueve al inicio)...", placeholder="Ej: Leonardo...")
+        busqueda = st.text_input("🔍 Buscar (Mueve al inicio sin lag)...", placeholder="Ej: Leonardo...")
     with f2:
         lista_estados = df['estado'].unique().tolist() if 'estado' in df.columns else []
         estado_filtro = st.multiselect("Filtrar Estado", lista_estados)
 
-    # 4. PREPARACIÓN DE DATOS Y OPCIONES
+    # 4. PREPARACIÓN DE DATOS
     df_display = df.copy()
     
-    meses_normales = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-    meses_negativos = [f"🔴 n.{m}" for m in meses_normales]
-    todas_las_opciones = meses_normales + meses_negativos
-    meses_full = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
-                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    # OPTIMIZACIÓN 2: Índice para autoguardado ultrarrápido
+    df_indexed = df.set_index('dni') if df.index.name != 'dni' else df
 
     def extraer_historial_completo(h, ano):
         seleccionados = []
         if isinstance(h, dict) and ano in h:
-            ano_data = h[ano]
-            for m_full, valor in ano_data.items():
+            for m_full, valor in h[ano].items():
                 m_abr = m_full[:3]
                 if valor == 1: seleccionados.append(m_abr)
                 elif valor == 0: seleccionados.append(f"🔴 n.{m_abr}")
@@ -58,43 +61,28 @@ def render(df):
 
     df_display['Historial'] = df_display['historial'].apply(lambda h: extraer_historial_completo(h, ano_activo))
 
-    # Aplicar Filtro de Estado (Este sí oculta filas)
+    # Aplicar Filtro de Estado
     if estado_filtro:
         df_display = df_display[df_display['estado'].isin(estado_filtro)]
 
-    # --- LÓGICA DE BÚSQUEDA TIPO EXCEL ---
+    # --- LÓGICA DE BÚSQUEDA VECTORIZADA (Rápida, sin estilos CSS) ---
     if busqueda:
         busqueda_lower = busqueda.lower()
-        # Columna temporal para marcar las filas que coinciden
-        df_display['coincide'] = (
+        mask = (
             df_display['nombre'].str.lower().str.contains(busqueda_lower, na=False) | 
             df_display['dni'].str.contains(busqueda, na=False) |
             df_display['celular'].astype(str).str.contains(busqueda, na=False)
         )
-        # Ordenamos: Las coincidencias van al inicio. Reseteamos el index para que el Autosave no se confunda.
-        df_display = df_display.sort_values('coincide', ascending=False).reset_index(drop=True)
-        num_coincidencias = df_display['coincide'].sum()
-        df_display = df_display.drop(columns=['coincide'])
+        # Movemos las coincidencias (True) arriba y reiniciamos el índice
+        df_display = df_display.iloc[mask.argsort()[::-1]].reset_index(drop=True)
     else:
         df_display = df_display.reset_index(drop=True)
-        num_coincidencias = 0
 
-    # Insertamos la numeración después de ordenar para que quede limpia (1, 2, 3...)
+    # Insertamos la numeración después de ordenar
     df_display.insert(0, 'N°', range(1, len(df_display) + 1))
     
-    # Preparamos las columnas exactas que van al editor
+    # Columnas exactas para el editor
     df_visible = df_display[['N°', 'dni', 'nombre', 'celular', 'estado', 'Historial', 'monto', 'deuda']]
-    
-    # Aplicar color de fondo si hubo búsqueda
-    if busqueda and num_coincidencias > 0:
-        def resaltar_filas(row):
-            # Pintamos de un tono dorado las filas que están al inicio (las que coinciden)
-            if row.name < num_coincidencias:
-                return ['background-color: rgba(255, 215, 0, 0.25)'] * len(row)
-            return [''] * len(row)
-        datos_editor = df_visible.style.apply(resaltar_filas, axis=1)
-    else:
-        datos_editor = df_visible
 
     # 5. FUNCIÓN DE GUARDADO AUTOMÁTICO (CALLBACK)
     def handle_autosave():
@@ -108,13 +96,14 @@ def render(df):
                     actual_row = df_display.iloc[row_idx]
                     dni_v = actual_row['dni']
                     
-                    historial_total = df[df['dni'] == dni_v].iloc[0]['historial']
+                    # OPTIMIZACIÓN 3: Búsqueda directa por índice (0.001 segundos)
+                    historial_total = df_indexed.at[dni_v, 'historial']
                     if not isinstance(historial_total, dict): historial_total = {}
 
                     lista_ui = changes.get('Historial', actual_row['Historial'])
                     
                     dic_ano = {}
-                    for m_f in meses_full:
+                    for m_f in MESES_FULL:
                         m_a = m_f[:3]
                         if m_a in lista_ui: dic_ano[m_f] = 1
                         elif f"🔴 n.{m_a}" in lista_ui: dic_ano[m_f] = 0
@@ -137,9 +126,9 @@ def render(df):
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
 
-    # 6. TABLA DE EDICIÓN CON AUTOSAVE Y FORMATO EXCEL
+    # 6. TABLA DE EDICIÓN CON AUTOSAVE
     st.data_editor(
-        datos_editor,
+        df_visible,  # Usamos el dataframe directo sin .style
         column_config={
             "N°": st.column_config.NumberColumn("N°", width=40),
             "dni": st.column_config.TextColumn("DNI", width=100),
@@ -148,7 +137,7 @@ def render(df):
             "estado": st.column_config.TextColumn("Estado", width=120),
             "Historial": st.column_config.MultiselectColumn(
                 f"Registro {ano_activo}", 
-                options=todas_las_opciones, 
+                options=TODAS_LAS_OPCIONES, 
                 width=280,
                 help="Selecciona Mes para 1, o 🔴 n.Mes para 0."
             ),
