@@ -1,53 +1,31 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-import os
-import time
 
 @st.cache_resource
 def get_supabase():
-    """Establece la conexión única con Supabase."""
+    """Establece la conexión con la base de datos."""
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 supabase = get_supabase()
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=600)
 def load_sura_core_db():
-    """Carga los 47k registros usando caché local Parquet para velocidad máxima."""
-    cache_file = "cache_padron.parquet"
-    
-    # 1. Intentar cargar desde el archivo local (0.5 segundos)
-    if os.path.exists(cache_file) and (time.time() - os.path.getmtime(cache_file) < 3600):
-        return pd.read_parquet(cache_file)
-
-    # 2. Si no hay caché, descargar de Supabase por lotes
-    all_data = []
-    offset, chunk = 0, 1000
-    msg_carga = st.empty()
-    
+    """Carga los 47k registros de forma masiva."""
     try:
-        while True:
-            msg_carga.info(f"⚡ Sincronizando Padrón: {offset:,} registros...")
-            res = supabase.table("clientes").select("*").range(offset, offset + chunk - 1).execute()
-            if not res.data: break
-            all_data.extend(res.data)
-            if len(res.data) < chunk: break
-            offset += chunk
-            
-        df = pd.DataFrame(all_data)
+        res = supabase.table("clientes").select("*").execute()
+        df = pd.DataFrame(res.data)
         
-        # Limpieza de datos crítica
         if not df.empty:
+            # Limpieza: Evitar que el DNI se vea como flotante (ej: 455.0)
             df['dni'] = df['dni'].astype(str).str.replace(r'\.0$', '', regex=True)
+            # Asegurar que el historial sea un diccionario válido
+            df['historial'] = df['historial'].apply(lambda x: x if isinstance(x, dict) else {})
+            # Formatear números
             for col in ['monto', 'deuda']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            
-            # Guardar copia local para el próximo inicio de sesión
-            df.to_parquet(cache_file)
-            
-        msg_carga.empty()
         return df
     except Exception as e:
-        st.error(f"Error de conexión: {e}")
+        st.error(f"Error al conectar con Supabase: {e}")
         return pd.DataFrame()
