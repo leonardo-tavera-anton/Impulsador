@@ -2,125 +2,76 @@ import streamlit as st
 import pandas as pd
 from utils.data_engine import supabase
 
-# 1. CONSTANTES GLOBALES
-MESES_NORMALES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-TODAS_LAS_OPCIONES = MESES_NORMALES + [f"🔴 n.{m}" for m in MESES_NORMALES]
-MESES_FULL = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
-              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-
 def render(df):
-    # --- ESTILOS CSS PARA MODO EXCEL ---
-    st.markdown("""
-        <style>
-        [data-testid='stDataEditor'] { min-width: 100%; }
-        /* Forzamos una altura mayor para el scroll tipo Excel */
-        [data-testid="stDataEditor"] > div:first-child { height: 600px !important; }
-        .stSelectbox { margin-bottom: 0px; }
-        </style>
-    """, unsafe_allow_html=True)
+    # CSS para que se vea como Excel y no se corte
+    st.markdown("<style>[data-testid='stDataEditor'] > div:first-child { height: 650px !important; }</style>", unsafe_allow_html=True)
 
-    st.markdown(f"""
-        <div style="background: linear-gradient(90deg, #1e3a8a, #3b82f6); padding:15px; border-radius:10px; color:white; margin-bottom:15px;">
-            <h3 style='margin:0;'>📋 LISTADO MAESTRO SURA v7.5</h3>
-            <p style='margin:0; opacity:0.8;'>Modo Hoja de Cálculo | Registros: {len(df):,}</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # --- 2. FILTROS ---
-    c1, c2, c3 = st.columns([1, 2, 1])
-    
+    # Filtros rápidos
+    c1, c2 = st.columns([1, 3])
     with c1:
-        ano_activo = st.selectbox("📅 Año Fiscal", [str(a) for a in range(2026, 2031)])
-
+        ano = st.selectbox("Año", [str(a) for a in range(2026, 2031)], key="sel_ano")
     with c2:
-        busqueda = st.text_input("🔍 Filtro de búsqueda (DNI o Nombre)", placeholder="Escribe para buscar instantáneamente...")
+        query = st.text_input("🔍 Buscador Maestro (DNI o Nombre)", key="main_search")
 
-    with c3:
-        if 'estado' in df.columns:
-            estados_unicos = [str(e) for e in df['estado'].unique() if pd.notna(e)]
-            lista_estados = sorted(estados_unicos)
-        else:
-            lista_estados = []
-        estado_filtro = st.multiselect("Filtrar por Estado", lista_estados)
+    # Filtrado ultra-rápido en memoria
+    if query:
+        q = query.lower()
+        df_final = df[df['nombre'].str.lower().str.contains(q, na=False) | df['dni'].str.contains(q, na=False)].copy()
+    else:
+        # Si no hay búsqueda, mostramos una muestra grande pero manejable
+        df_final = df.head(500).copy()
 
-    # --- 3. LÓGICA DE FILTRADO (SIN LÍMITE DE 100) ---
-    mask = pd.Series(True, index=df.index)
-    
-    if busqueda:
-        b = busqueda.lower()
-        mask &= (df['nombre'].str.lower().str.contains(b, na=False) | df['dni'].str.contains(b, na=False))
-    
-    if estado_filtro:
-        mask &= df['estado'].astype(str).isin(estado_filtro)
-
-    # Cargamos el DataFrame completo filtrado
-    df_filtered = df[mask].copy()
-
-    # --- 4. PROCESAMIENTO DE HISTORIAL ---
-    def extraer_historial_rapido(h, ano):
-        if isinstance(h, dict) and ano in h:
-            return [m[:3] if v == 1 else f"🔴 n.{m[:3]}" for m, v in h[ano].items() if v is not None]
+    # Procesar historial SOLO para lo que se va a mostrar
+    def fast_hist(h, a):
+        if isinstance(h, dict) and a in h:
+            return [m[:3] if v == 1 else f"🔴 n.{m[:3]}" for m, v in h[a].items() if v is not None]
         return []
 
-    # Transformación eficiente
-    df_filtered['Historial'] = df_filtered['historial'].apply(lambda h: extraer_historial_rapido(h, ano_activo))
-    df_filtered.insert(0, 'N°', range(1, len(df_filtered) + 1))
-    
-    # --- 5. CALLBACK DE AUTOSAVE ---
-    def handle_autosave():
-        key = f"ed_{ano_activo}"
-        if key in st.session_state:
-            changes = st.session_state[key].get("edited_rows", {})
-            if not changes: return
+    df_final['Pagos'] = df_final['historial'].apply(lambda x: fast_hist(x, ano))
 
+    # Editor tipo Excel
+    edited_df = st.data_editor(
+        df_final[['dni', 'nombre', 'estado', 'Pagos', 'monto', 'deuda', 'celular']],
+        column_config={
+            "dni": st.column_config.TextColumn("DNI", disabled=True),
+            "nombre": st.column_config.TextColumn("Cliente", width=300, disabled=True),
+            "estado": st.column_config.SelectboxColumn("Estado", options=["DESEMBOLSADO", "PENDIENTE", "CANCELADO"]),
+            "Pagos": st.column_config.MultiselectColumn("Meses", options=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]),
+            "monto": st.column_config.NumberColumn("Monto", format="%.2f"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="editor_padrón"
+    )
+
+    # GUARDADO OPTIMIZADO (Solo lo que cambió)
+    state_key = "editor_padrón"
+    if state_key in st.session_state:
+        changes = st.session_state[state_key].get("edited_rows")
+        if changes:
             payload = []
-            for row_idx, modifs in changes.items():
-                idx = int(row_idx)
-                row_orig = df_filtered.iloc[idx]
+            for row_idx, mods in changes.items():
+                # Obtenemos la data original de la fila editada
+                real_row = df_final.iloc[int(row_idx)]
                 
-                # Reconstrucción del historial
-                hist_total = row_orig['historial'] if isinstance(row_orig['historial'], dict) else {}
-                
-                if 'Historial' in modifs:
-                    nueva_lista = modifs['Historial']
-                    dic_ano = {m_f: (1 if m_f[:3] in nueva_lista else (0 if f"🔴 n.{m_f[:3]}" in nueva_lista else None)) for m_f in MESES_FULL}
-                    hist_total[ano_activo] = dic_ano
+                # Actualizar historial si cambió
+                new_h = real_row['historial'] if isinstance(real_row['historial'], dict) else {}
+                if 'Pagos' in mods:
+                    meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+                    new_h[ano] = {m: (1 if m[:3] in mods['Pagos'] else 0) for m in meses}
 
                 payload.append({
-                    "dni": row_orig['dni'],
-                    "historial": hist_total,
-                    "estado": str(modifs.get('estado', row_orig['estado'])),
-                    "monto": float(modifs.get('monto', row_orig['monto'])),
-                    "deuda": float(modifs.get('deuda', row_orig['deuda'])),
-                    "celular": str(modifs.get('celular', row_orig['celular']))
+                    "dni": real_row['dni'],
+                    "historial": new_h,
+                    "estado": mods.get('estado', real_row['estado']),
+                    "monto": float(mods.get('monto', real_row['monto'])),
+                    "deuda": float(mods.get('deuda', real_row['deuda'])),
+                    "celular": str(mods.get('celular', real_row['celular']))
                 })
 
             if payload:
                 try:
                     supabase.table("clientes").upsert(payload).execute()
-                    st.toast("✅ Cambios guardados", icon="💾")
+                    st.toast("✅ Guardado en Supabase", icon="💾")
                 except Exception as e:
-                    st.error(f"Error: {e}")
-
-    # --- 6. EL EDITOR VISUAL (INFINITO) ---
-    st.data_editor(
-        df_filtered[['N°', 'dni', 'nombre', 'celular', 'estado', 'Historial', 'monto', 'deuda']],
-        column_config={
-            "N°": st.column_config.NumberColumn(width=50, disabled=True),
-            "dni": st.column_config.TextColumn("DNI", width=120, disabled=True),
-            "nombre": st.column_config.TextColumn("Nombre completo", width=300, disabled=True),
-            "estado": st.column_config.SelectboxColumn("Estado", options=lista_estados, width=150),
-            "Historial": st.column_config.MultiselectColumn(
-                f"Pagos {ano_activo}", 
-                options=TODAS_LAS_OPCIONES, 
-                width=350
-            ),
-            "monto": st.column_config.NumberColumn("Monto S/", format="%.2f"),
-            "deuda": st.column_config.NumberColumn("Deuda S/", format="%.2f"),
-            "celular": st.column_config.TextColumn("Celular"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key=f"ed_{ano_activo}",
-        on_change=handle_autosave
-    )
+                    st.error(f"Error al guardar: {e}")
