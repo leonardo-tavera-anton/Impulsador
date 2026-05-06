@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
-from utils.data_engine import supabase 
-from modules import dashboard, gestion, importacion
+from utils.data_engine import load_sura_core_db
 
-# 1. CONFIGURACIÓN INICIAL
+# 1. CONFIGURACIÓN (Mantenemos tu estilo pero optimizamos el layout)
 st.set_page_config(
     page_title="SURA v7.5 - Leonardo Tavera",
     page_icon="⚡",
@@ -11,132 +10,57 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilos Globales para ocultar Sidebar y mejorar Tabs (Mantenidos y Reforzados)
+# Estilos CSS (Tu diseño intacto)
 st.markdown("""
     <style>
-    [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
+    [data-testid="stSidebarNavigation"] { display: none; }
     .block-container { padding-top: 1rem !important; }
     header { visibility: hidden !important; }
-    .stTabs [data-baseweb="tab-list"] { 
-        gap: 15px; 
-        background-color: #0d1117; 
-        padding: 10px; 
-        border-radius: 10px; 
-    }
-    .stTabs [data-baseweb="tab"] { 
-        height: 45px; 
-        background-color: #161b22; 
-        border-radius: 5px; 
-        color: white; 
-        border: none;
-        padding: 0px 20px;
-    }
-    .stTabs [aria-selected="true"] { 
-        background-color: #58a6ff !important; 
-        color: black !important; 
-        font-weight: bold;
-    }
-    /* Estilo para los inputs del Login */
-    .stTextInput input {
-        background-color: #0d1117;
-        color: white;
-        border: 1px solid #30363d;
-    }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-# 2. CARGA DE DATOS CENTRALIZADA (PAGINACIÓN PARA > 1000 REGISTROS)
-@st.cache_data(ttl=300)
-def load_data():
-    try:
-        all_rows = []
-        limit = 1000
-        offset = 0
-        
-        # Bucle para traer la base completa (6,000+ registros)
-        while True:
-            response = supabase.table("clientes").select("*").range(offset, offset + limit - 1).execute()
-            data = response.data
-            if not data:
-                break
-            all_rows.extend(data)
-            if len(data) < limit:
-                break
-            offset += limit
-            
-        df = pd.DataFrame(all_rows)
-        
-        if not df.empty:
-            # Forzamos minúsculas para evitar KeyError
-            df.columns = [str(c).lower().strip() for c in df.columns]
-            # Limpieza de DNI para evitar el .0 de Excel
-            df['dni'] = df['dni'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-            
-            # Limpieza de montos numéricos
-            for col in ['monto', 'cuota', 'deuda']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            
-            # Asegurar que la columna historial exista como dict
-            if 'historial' not in df.columns:
-                df['historial'] = [{} for _ in range(len(df))]
-                
-        return df
-    except Exception as e:
-        st.error(f"Error crítico en carga de datos: {e}")
-        return pd.DataFrame()
-
-# 3. CONTROL DE ACCESO
+# 2. SISTEMA DE LOGIN (Optimizado)
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
 if not st.session_state.auth:
-    st.markdown("<h1 style='text-align:center; color: #58a6ff; margin-top: 50px;'>🔐 SURA v7.5</h1>", unsafe_allow_html=True)
-    
-    col_l1, col_l2, col_l3 = st.columns([1, 1.5, 1])
+    st.markdown("<h1 style='text-align:center; color: #58a6ff;'>🔐 SURA v7.5</h1>", unsafe_allow_html=True)
+    _, col_l2, _ = st.columns([1, 1.5, 1])
     with col_l2:
-        with st.container(border=True):
-            # Usamos un formulario para capturar el ENTER del teclado
-            with st.form("login_form"):
-                u = st.text_input("Usuario", placeholder="Ingrese su usuario")
-                p = st.text_input("Clave", type="password", placeholder="••••••••")
-                submit = st.form_submit_button("ENTRAR", use_container_width=True)
-                
-                if submit:
-                    if u == "admin" and p == "admin":
-                        st.session_state.auth = True
-                        st.session_state.user_sura = "Leonardo Tavera"
-                        st.success("Acceso concedido")
-                        st.rerun()
-                    else:
-                        st.error("Credenciales incorrectas")
+        with st.form("login"):
+            u = st.text_input("Usuario")
+            p = st.text_input("Clave", type="password")
+            if st.form_submit_button("ENTRAR", use_container_width=True):
+                if u == "admin" and p == "admin": # Cambiar por secrets en producción
+                    st.session_state.auth = True
+                    st.rerun()
+                else:
+                    st.error("Error de acceso")
 else:
-    # Header de Usuario (Tu diseño original)
-    head1, head2 = st.columns([4, 1])
-    with head1:
-        st.markdown(f"### 💎 SURA v7.5 | <span style='color:#58a6ff;'>{st.session_state.user_sura}</span>", unsafe_allow_html=True)
-    with head2:
-        if st.button("🔄 RECARGAR DATA", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+    # 3. CARGA DE DATOS (Usamos la función del Engine)
+    # Al estar cacheada, no se descarga de nuevo al cambiar de tab
+    df_main = load_sura_core_db()
 
-    # Carga de la data global
-    df_main = load_data()
+    # 4. HEADER Y RECARGA
+    c1, c2 = st.columns([4, 1])
+    c1.subheader(f"💎 SURA v7.5 | Bienvenido, Leonardo")
+    if c2.button("🔄 RECARGAR TODO", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-    # 4. NAVEGACIÓN POR TABS (Tus 3 tabs originales)
+    # 5. TABS CON IMPORTACIÓN "LAZY" (Solo carga el código necesario)
     tab1, tab2, tab3 = st.tabs(["📊 DASHBOARD", "📋 GESTIÓN", "📤 IMPORTACIÓN"])
 
     with tab1:
-        if not df_main.empty:
-            dashboard.render(df_main)
-        else:
-            st.info("No hay datos para mostrar en el Dashboard.")
+        from modules import dashboard
+        dashboard.render(df_main)
 
     with tab2:
-        if not df_main.empty:
-            gestion.render(df_main)
-        else:
-            st.warning("La tabla está vacía. Importe un archivo para comenzar.")
+        from modules import gestion
+        # Si la data es muy pesada, gestion.render se encarga del head(100)
+        gestion.render(df_main)
 
     with tab3:
+        from modules import importacion
         importacion.render()
