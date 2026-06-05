@@ -1,7 +1,7 @@
 name: Sync to Hugging Face
 on:
   push:
-    branches: [main] # Se ejecutará cada vez que subas cambios a main
+    branches: [main]
 
 jobs:
   sync-to-hub:
