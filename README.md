@@ -1,12 +1,9 @@
 ---
-title: Sura App
+title: sura-app
 emoji: ⚡
 colorFrom: blue
 colorTo: gray
-sdk: docker
+sdk: streamlit
 app_file: app.py
 pinned: false
 ---
-
-# SURA v7.5
-Sistema de gestión interna.
