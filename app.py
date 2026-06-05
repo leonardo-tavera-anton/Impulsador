@@ -49,7 +49,7 @@ st.markdown("""
 def load_data():
     try:
         all_rows = []
-        limit = 5000
+        limit = 1000
         offset = 0
         
         while True:
